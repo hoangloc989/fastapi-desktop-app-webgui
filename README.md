@@ -43,7 +43,7 @@ def close_window():
     close_application()
 ```
 
-
+![Example UI](public/screenshot.png)
 
 ## Configurations
 
