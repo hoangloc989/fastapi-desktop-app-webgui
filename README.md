@@ -22,7 +22,7 @@ async def root(request: Request):
 
 @app.get("/home", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse("some_page.html", {"request": request})
+    return templates.TemplateResponse("home.html", {"request": request})
 
 if __name__ == "__main__":
     GUI(app=app, server="fastapi").run()

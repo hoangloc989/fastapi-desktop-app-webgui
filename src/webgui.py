@@ -8,26 +8,24 @@ import tempfile
 import platform
 import subprocess
 import socketserver
-import multiprocessing
 from multiprocessing import Process
 from threading import Thread
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Union
-from contextlib import suppress
+import logging
 
+__version__ = "0.3.7"
 
-FLASKWEBGUI_USED_PORT = None
-FLASKWEBGUI_BROWSER_PROCESS = None
+WEBGUI_USED_PORT = None
+WEBGUI_BROWSER_PROCESS = None
 
 OPERATING_SYSTEM = platform.system().lower()
 PY = "python3" if OPERATING_SYSTEM in ["linux", "darwin"] else "python"
-
 
 def get_free_port():
     with socketserver.TCPServer(("localhost", 0), None) as s:
         free_port = s.server_address[1]
     return free_port
-
 
 def kill_port(port: int):
     for proc in psutil.process_iter():
@@ -38,64 +36,13 @@ def kill_port(port: int):
         except psutil.AccessDenied:
             continue
 
-
 def close_application():
-    if FLASKWEBGUI_BROWSER_PROCESS is not None:
-        FLASKWEBGUI_BROWSER_PROCESS.terminate()
+    if WEBGUI_BROWSER_PROCESS is not None:
+        WEBGUI_BROWSER_PROCESS.terminate()
 
-    kill_port(FLASKWEBGUI_USED_PORT)
+    kill_port(WEBGUI_USED_PORT)
 
-
-def find_browser_on_linux():
-    paths = [
-        r"/usr/bin/google-chrome",
-        r"/usr/bin/microsoft-edge-stable",
-        r"/usr/bin/microsoft-edge",
-        r"/usr/bin/brave-browser",
-        r"/usr/bin/chromium",
-        # Web browsers installed via flatpak portals
-        r"/run/host/usr/bin/google-chrome",
-        r"/run/host/usr/bin/microsoft-edge-stable",
-        r"/run/host/usr/bin/microsoft-edge",
-        r"/run/host/usr/bin/brave-browser",
-        r"/run/host/usr/bin/chromium",
-        # Web browsers installed via snap
-        r"/snap/bin/chromium",
-        r"/snap/bin/brave-browser",
-        r"/snap/bin/google-chrome",
-        r"/snap/bin/microsoft-edge-stable",
-        r"/snap/bin/microsoft-edge",
-    ]
-    for path in paths:
-        if os.path.exists(path):
-            return path
-
-    for path in paths:
-        with suppress(subprocess.CalledProcessError):
-            bp = (
-                subprocess.check_output(["which", os.path.basename(path)])
-                .decode("utf-8")
-                .strip()
-            )
-            if os.path.exists(bp):
-                return bp
-
-    return None
-
-
-def find_browser_on_mac():
-    paths = [
-        r"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        r"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-        r"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    ]
-    for path in paths:
-        if os.path.exists(path):
-            return path
-    return None
-
-
-def find_browser_on_windows():
+def find_browser():
     paths = [
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
@@ -107,33 +54,40 @@ def find_browser_on_windows():
             return path
     return None
 
-
 browser_path_dispacher: Dict[str, Callable[[], str]] = {
-    "windows": find_browser_on_windows,
-    "linux": find_browser_on_linux,
-    "darwin": find_browser_on_mac,
+    "windows": find_browser
 }
-
 
 class BaseDefaultServer:
     server: Callable
     get_server_kwargs: Callable
 
-
 class DefaultServerFastApi:
+
     @staticmethod
     def get_server_kwargs(**kwargs):
-        server_kwargs = {"app": kwargs.get("app"), "port": kwargs.get("port")}
+        server_kwargs = {
+            "app": kwargs.get("app"),
+            "port": kwargs.get("port"),
+            "log_level": "info",
+        }
         return server_kwargs
+
 
     @staticmethod
     def server(**server_kwargs):
         import uvicorn
-
-        uvicorn.run(**server_kwargs)
+        logging.info("Starting Uvicorn server with kwargs: %s", server_kwargs)
+        try:
+            uvicorn.run(**server_kwargs)
+        except Exception as e:
+            logging.error("Error starting Uvicorn: %s", e)
+        finally:
+            logging.info("Uvicorn server has exited.")
 
 
 class DefaultServerFlask:
+
     @staticmethod
     def get_server_kwargs(**kwargs):
         return {"app": kwargs.get("app"), "port": kwargs.get("port")}
@@ -150,46 +104,10 @@ class DefaultServerFlask:
         except:
             app.run(**server_kwargs)
 
-
-class DefaultServerDjango:
-    @staticmethod
-    def get_server_kwargs(**kwargs):
-        return {"app": kwargs["app"], "port": kwargs["port"]}
-
-    @staticmethod
-    def server(**server_kwargs):
-        import waitress
-        from whitenoise import WhiteNoise
-
-        application = WhiteNoise(server_kwargs["app"])
-        server_kwargs.pop("app")
-
-        waitress.serve(application, threads=100, **server_kwargs)
-
-
-class DefaultServerFlaskSocketIO:
-    @staticmethod
-    def get_server_kwargs(**kwargs):
-        return {
-            "app": kwargs.get("app"),
-            "flask_socketio": kwargs.get("flask_socketio"),
-            "port": kwargs.get("port"),
-        }
-
-    @staticmethod
-    def server(**server_kwargs):
-        server_kwargs["flask_socketio"].run(
-            server_kwargs["app"], port=server_kwargs["port"]
-        )
-
-
 webserver_dispacher: Dict[str, BaseDefaultServer] = {
     "fastapi": DefaultServerFastApi,
-    "flask": DefaultServerFlask,
-    "flask_socketio": DefaultServerFlaskSocketIO,
-    "django": DefaultServerDjango,
+    "flask": DefaultServerFlask
 }
-
 
 @dataclass
 class GUI:
@@ -206,37 +124,32 @@ class GUI:
     browser_path: str = None
     browser_command: List[str] = None
     socketio: Any = None
-    profile_dir_prefix: str = "flaskwebgui"
+    profile_dir_prefix: str = "webgui"
 
     def __post_init__(self):
         self.__keyboard_interrupt = False
-        global FLASKWEBGUI_USED_PORT
+        global WEBGUI_USED_PORT
 
         if self.port is None:
-            self.port = (
-                self.server_kwargs.get("port")
-                if self.server_kwargs
-                else get_free_port()
-            )
+            self.port = (self.server_kwargs.get("port")
+                         if self.server_kwargs else get_free_port())
 
-        FLASKWEBGUI_USED_PORT = self.port
+        WEBGUI_USED_PORT = self.port
 
         if isinstance(self.server, str):
             default_server = webserver_dispacher[self.server]
             self.server = default_server.server
             self.server_kwargs = self.server_kwargs or default_server.get_server_kwargs(
-                app=self.app, port=self.port, flask_socketio=self.socketio
-            )
+                app=self.app, port=self.port, flask_socketio=self.socketio)
 
         self.profile_dir = os.path.join(
-            tempfile.gettempdir(), self.profile_dir_prefix + uuid.uuid4().hex
-        )
+            tempfile.gettempdir(), self.profile_dir_prefix + uuid.uuid4().hex)
         self.url = f"http://127.0.0.1:{self.port}"
 
-        self.browser_path = (
-                self.browser_path or browser_path_dispacher.get(OPERATING_SYSTEM)()
+        self.browser_path = (self.browser_path
+                             or browser_path_dispacher.get(OPERATING_SYSTEM)())
+        self.browser_command = self.browser_command or self.get_browser_command(
         )
-        self.browser_command = self.browser_command or self.get_browser_command()
 
         if not self.browser_path:
             print("path to chrome not found")
@@ -264,51 +177,56 @@ class GUI:
         return flags
 
     def start_browser(self, server_process: Union[Thread, Process]):
-        print("Command:", " ".join(self.browser_command))
-        global FLASKWEBGUI_BROWSER_PROCESS
+        try:
+            print("Command:", " ".join(self.browser_command))
+            global WEBGUI_BROWSER_PROCESS
 
-        if OPERATING_SYSTEM == "darwin":
-            multiprocessing.set_start_method("fork")
-            
-        FLASKWEBGUI_BROWSER_PROCESS = subprocess.Popen(self.browser_command)
-        FLASKWEBGUI_BROWSER_PROCESS.wait()
+            WEBGUI_BROWSER_PROCESS = subprocess.Popen(self.browser_command)
+            WEBGUI_BROWSER_PROCESS.wait()
 
-        if self.browser_path is None:
-            while self.__keyboard_interrupt is False:
-                time.sleep(1)
+            if self.browser_path is None:
+                while self.__keyboard_interrupt is False:
+                    time.sleep(1)
 
-        if isinstance(server_process, Process):
-            if self.on_shutdown is not None:
-                self.on_shutdown()
-            shutil.rmtree(self.profile_dir, ignore_errors=True)
-            server_process.kill()
-        else:
-            if self.on_shutdown is not None:
-                self.on_shutdown()
-            shutil.rmtree(self.profile_dir, ignore_errors=True)
-            kill_port(self.port)
-
+            if isinstance(server_process, Process):
+                if self.on_shutdown is not None:
+                    self.on_shutdown()
+                shutil.rmtree(self.profile_dir, ignore_errors=True)
+                server_process.kill()
+            else:
+                if self.on_shutdown is not None:
+                    self.on_shutdown()
+                shutil.rmtree(self.profile_dir, ignore_errors=True)
+                kill_port(self.port)
+        except Exception as e:
+            logging.error("Error launching browser: %s", e)
+    
     def run(self):
+        logging.info("webgui run start")
         if self.on_startup is not None:
             self.on_startup()
 
-        if OPERATING_SYSTEM == "darwin":
-            multiprocessing.set_start_method("fork")
-            server_process = Process(
-                target=self.server, kwargs=self.server_kwargs or {}
-            )
-        else:
-            server_process = Thread(target=self.server, kwargs=self.server_kwargs or {})
+        server_process = Thread(target=self.server, kwargs=self.server_kwargs or {})
+        logging.info(f"webgui server_process: {server_process}")
 
         browser_thread = Thread(target=self.start_browser, args=(server_process,))
+        logging.info(f"webgui browser_thread: {browser_thread}")
 
         try:
             server_process.start()
             browser_thread.start()
+
+            while server_process.is_alive() and browser_thread.is_alive():
+                time.sleep(1)
+
+            # Log statuses when the loop exits
+            if not server_process.is_alive():
+                logging.warning("Server process has stopped.")
+            if not browser_thread.is_alive():
+                logging.warning("Browser thread has stopped.")
+
             server_process.join()
             browser_thread.join()
-        except KeyboardInterrupt:
-            self.__keyboard_interrupt = True
-            print("Stopped")
 
-        return server_process, browser_thread
+        except Exception as e:
+            logging.error(f"Error in run method: {e}")

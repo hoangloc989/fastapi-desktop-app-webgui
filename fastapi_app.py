@@ -6,6 +6,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from src.webgui import GUI, close_application
 
+
+import logging
+
+logging.basicConfig(level=logging.INFO, filename='app.log', filemode='a', format='%(asctime)s - %(levelname)s - %(message)s')
+
+
 app = FastAPI()
 
 base_path = os.path.dirname(__file__)  # Regular Python script
@@ -14,10 +20,6 @@ base_path = os.path.dirname(__file__)  # Regular Python script
 app.mount("/public", StaticFiles(directory=os.path.join(base_path, "public")), name="public")
 templates = Jinja2Templates(directory=os.path.join(base_path, "templates"))
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    response = await call_next(request)
-    return response
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
@@ -51,19 +53,15 @@ async def table(request: Request):
 async def close_server():
     close_application()
 
-def start_fastapi(**kwargs):
-    import uvicorn
-    uvicorn.run(**kwargs)
-
 if __name__ == "__main__":
-    # Default start fastapi
-    GUI(
-        app=app,
-        server="fastapi",    
-        server_kwargs={
-            "app": "main:app",
-            "port": 3000,
-        },
-        width=1024,
-        height=600,
-    ).run()
+    try:
+        logging.info("Starting GUI with FastAPI app...")
+        GUI(
+            app=app,
+            server="fastapi",
+            port=3000,
+            width=1024,
+            height=600,
+        ).run()
+    except Exception as e:
+        logging.error("Error starting application: %s", e)
